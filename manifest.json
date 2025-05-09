@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Dual Bookmark Bar",
+  "version": "2.1",
+  "description": "Safely toggle between Private and Work bookmark bars with Chrome-managed backup.",
+  "permissions": ["bookmarks", "commands", "storage"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_icon": {"128": "icons/icon128.png"},
+    "default_title": "Toggle Bookmarks"
+  },
+  "commands": {
+    "toggle-bookmarks": {
+      "suggested_key": {"default": "Alt+Shift+Y"},
+      "description": "Toggle bookmark bars"
+    }
+  },
+  "icons": {"128": "icons/icon128.png"}
+}

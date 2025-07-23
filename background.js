@@ -13,38 +13,50 @@ async function findFolderByName(parentId, title) {
 
 // Initialize and ensure backup folders exist (on startup/install)
 async function ensureBackupFoldersExist() {
-  let backupFolder = await findFolderByName(OTHER_BOOKMARKS_ID, BACKUP_FOLDER_NAME);
-  if (!backupFolder) {
-    backupFolder = await chrome.bookmarks.create({
-      parentId: OTHER_BOOKMARKS_ID,
-      title: BACKUP_FOLDER_NAME
-    });
-  }
+  try {
+    let backupFolder = await findFolderByName(OTHER_BOOKMARKS_ID, BACKUP_FOLDER_NAME);
+    if (!backupFolder) {
+      backupFolder = await chrome.bookmarks.create({
+        parentId: OTHER_BOOKMARKS_ID,
+        title: BACKUP_FOLDER_NAME
+      });
+      console.log('Created backup folder:', backupFolder.id);
+    }
 
-  let privateFolder = await findFolderByName(backupFolder.id, PRIVATE_FOLDER_NAME);
-  if (!privateFolder) {
-    privateFolder = await chrome.bookmarks.create({
-      parentId: backupFolder.id,
-      title: PRIVATE_FOLDER_NAME
-    });
+    let privateFolder = await findFolderByName(backupFolder.id, PRIVATE_FOLDER_NAME);
+    if (!privateFolder) {
+      privateFolder = await chrome.bookmarks.create({
+        parentId: backupFolder.id,
+        title: PRIVATE_FOLDER_NAME
+      });
+      console.log('Created private folder:', privateFolder.id);
 
-    // Initial backup: copy current bookmarks bar into Private backup
-    await copyBookmarks(BAR_ID, privateFolder.id);
-  }
+      // Initial backup: copy current bookmarks bar into Private backup
+      // Add a small delay to ensure folder is fully created
+      setTimeout(async () => {
+        await copyBookmarks(BAR_ID, privateFolder.id);
+        console.log('Initial backup completed');
+      }, 100);
+    }
 
-  let workFolder = await findFolderByName(backupFolder.id, WORK_FOLDER_NAME);
-  if (!workFolder) {
-    await chrome.bookmarks.create({
-      parentId: backupFolder.id,
-      title: WORK_FOLDER_NAME
-    });
-    // Work folder starts empty (user manually populates it later)
-  }
+    let workFolder = await findFolderByName(backupFolder.id, WORK_FOLDER_NAME);
+    if (!workFolder) {
+      workFolder = await chrome.bookmarks.create({
+        parentId: backupFolder.id,
+        title: WORK_FOLDER_NAME
+      });
+      console.log('Created work folder:', workFolder.id);
+      // Work folder starts empty (user manually populates it later)
+    }
 
-  // Initialize state if not set
-  const {activeFolder} = await chrome.storage.local.get('activeFolder');
-  if (!activeFolder) {
-    await chrome.storage.local.set({activeFolder: 'private'});
+    // Initialize state if not set
+    const {activeFolder} = await chrome.storage.local.get('activeFolder');
+    if (!activeFolder) {
+      await chrome.storage.local.set({activeFolder: 'private'});
+      console.log('Set initial active folder to private');
+    }
+  } catch (error) {
+    console.error('Error ensuring backup folders exist:', error);
   }
 }
 
@@ -58,22 +70,46 @@ async function clearBookmarksBar() {
 
 // Recursively copy bookmarks/folders safely (no deletion)
 async function copyBookmarks(sourceId, destId) {
-  const items = await chrome.bookmarks.getChildren(sourceId);
-  for (const item of items) {
-    const createdItem = await chrome.bookmarks.create({
-      parentId: destId,
-      title: item.title,
-      url: item.url
-    });
-
-    if (!item.url) { // If it's a folder, recurse
-      await copyBookmarks(item.id, createdItem.id);
+  try {
+    // Validate that destId exists and is a folder
+    const destNode = await chrome.bookmarks.get(destId);
+    if (!destNode || destNode.length === 0 || destNode[0].url) {
+      console.error(`Invalid destination folder ID: ${destId}`);
+      return;
     }
+
+    const items = await chrome.bookmarks.getChildren(sourceId);
+    for (const item of items) {
+      try {
+        const createdItem = await chrome.bookmarks.create({
+          parentId: destId,
+          title: item.title,
+          url: item.url || undefined // Don't pass url for folders
+        });
+
+        if (!item.url) { // If it's a folder, recurse
+          await copyBookmarks(item.id, createdItem.id);
+        }
+      } catch (error) {
+        console.error(`Error copying bookmark "${item.title}":`, error);
+        // Continue with other bookmarks even if one fails
+      }
+    }
+  } catch (error) {
+    console.error(`Error in copyBookmarks (${sourceId} -> ${destId}):`, error);
   }
 }
 
+// Flag to prevent auto-save during our own operations
+let isTogglingBookmarks = false;
+
 // Save current bookmarks bar to the active backup folder
 async function saveCurrentBookmarksToBackup() {
+  if (isTogglingBookmarks) {
+    console.log('Skipping auto-save during toggle operation');
+    return;
+  }
+
   try {
     const {activeFolder} = await chrome.storage.local.get('activeFolder');
     if (!activeFolder) return;
@@ -85,6 +121,8 @@ async function saveCurrentBookmarksToBackup() {
     const targetFolder = await findFolderByName(backupFolder.id, targetFolderName);
     if (!targetFolder) return;
 
+    console.log(`Saving bookmarks to ${targetFolderName}...`);
+
     // Clear the backup folder first
     const backupItems = await chrome.bookmarks.getChildren(targetFolder.id);
     for (const item of backupItems) {
@@ -93,7 +131,7 @@ async function saveCurrentBookmarksToBackup() {
 
     // Copy current bookmarks bar to backup
     await copyBookmarks(BAR_ID, targetFolder.id);
-    console.log(`Saved bookmarks to ${targetFolderName}`);
+    console.log(`Successfully saved bookmarks to ${targetFolderName}`);
   } catch (error) {
     console.error('Error saving bookmarks to backup:', error);
   }
@@ -103,6 +141,7 @@ async function saveCurrentBookmarksToBackup() {
 async function toggleBookmarks() {
   try {
     console.log('Toggle bookmarks triggered');
+    isTogglingBookmarks = true;
     
     // First, save current state to backup
     await saveCurrentBookmarksToBackup();
@@ -111,6 +150,11 @@ async function toggleBookmarks() {
     const nextFolder = activeFolder === 'private' ? 'work' : 'private';
 
     const backupFolder = await findFolderByName(OTHER_BOOKMARKS_ID, BACKUP_FOLDER_NAME);
+    if (!backupFolder) {
+      console.error('Backup folder not found');
+      return;
+    }
+
     const sourceFolderName = nextFolder === 'private' ? PRIVATE_FOLDER_NAME : WORK_FOLDER_NAME;
     const sourceFolder = await findFolderByName(backupFolder.id, sourceFolderName);
 
@@ -119,13 +163,20 @@ async function toggleBookmarks() {
       return;
     }
 
+    console.log(`Clearing bookmarks bar and loading ${sourceFolderName}...`);
     await clearBookmarksBar();                       // Safe to delete temp bookmarks
     await copyBookmarks(sourceFolder.id, BAR_ID);    // Safe copying from backup folder
 
     await chrome.storage.local.set({activeFolder: nextFolder});
-    console.log(`Switched to ${nextFolder} bookmarks`);
+    console.log(`Successfully switched to ${nextFolder} bookmarks`);
   } catch (error) {
     console.error('Error toggling bookmarks:', error);
+  } finally {
+    // Re-enable auto-save after a delay
+    setTimeout(() => {
+      isTogglingBookmarks = false;
+      console.log('Re-enabled auto-save');
+    }, 1000);
   }
 }
 

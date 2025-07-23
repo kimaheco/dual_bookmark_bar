@@ -1,9 +1,48 @@
 // Constants for folder names
 const BAR_ID = "1";
-const OTHER_BOOKMARKS_ID = "2";
 const BACKUP_FOLDER_NAME = "Bookmark Backup";
 const PRIVATE_FOLDER_NAME = "Private Bookmarks";
 const WORK_FOLDER_NAME = "Work Bookmarks";
+
+// Helper: Find the "Other Bookmarks" folder dynamically
+async function findOtherBookmarksFolder() {
+  try {
+    const rootNodes = await chrome.bookmarks.getTree();
+    const bookmarkBar = rootNodes[0];
+    
+    // Look for "Other Bookmarks" folder - it's usually the sibling of the bookmarks bar
+    for (const child of bookmarkBar.children) {
+      if (child.title === "Other Bookmarks" || child.title === "Weitere Lesezeichen" || 
+          child.title === "Andere Lesezeichen" || !child.url) {
+        // Additional check: it should not be the bookmarks bar itself
+        if (child.id !== BAR_ID) {
+          console.log('Found Other Bookmarks folder:', child.id, child.title);
+          return child.id;
+        }
+      }
+    }
+    
+    // Fallback: try common IDs
+    const commonIds = ["2", "3", "other_bookmarks"];
+    for (const id of commonIds) {
+      try {
+        const node = await chrome.bookmarks.get(id);
+        if (node && node[0] && !node[0].url) {
+          console.log('Found Other Bookmarks via fallback:', id);
+          return id;
+        }
+      } catch (e) {
+        // Continue trying other IDs
+      }
+    }
+    
+    console.error('Could not find Other Bookmarks folder');
+    return null;
+  } catch (error) {
+    console.error('Error finding Other Bookmarks folder:', error);
+    return null;
+  }
+}
 
 // Helper: Find a folder by name within a parent
 async function findFolderByName(parentId, title) {
@@ -14,10 +53,17 @@ async function findFolderByName(parentId, title) {
 // Initialize and ensure backup folders exist (on startup/install)
 async function ensureBackupFoldersExist() {
   try {
-    let backupFolder = await findFolderByName(OTHER_BOOKMARKS_ID, BACKUP_FOLDER_NAME);
+    // First, find the Other Bookmarks folder dynamically
+    const otherBookmarksId = await findOtherBookmarksFolder();
+    if (!otherBookmarksId) {
+      console.error('Cannot find Other Bookmarks folder - aborting setup');
+      return;
+    }
+
+    let backupFolder = await findFolderByName(otherBookmarksId, BACKUP_FOLDER_NAME);
     if (!backupFolder) {
       backupFolder = await chrome.bookmarks.create({
-        parentId: OTHER_BOOKMARKS_ID,
+        parentId: otherBookmarksId,
         title: BACKUP_FOLDER_NAME
       });
       console.log('Created backup folder:', backupFolder.id);
@@ -114,7 +160,10 @@ async function saveCurrentBookmarksToBackup() {
     const {activeFolder} = await chrome.storage.local.get('activeFolder');
     if (!activeFolder) return;
 
-    const backupFolder = await findFolderByName(OTHER_BOOKMARKS_ID, BACKUP_FOLDER_NAME);
+    const otherBookmarksId = await findOtherBookmarksFolder();
+    if (!otherBookmarksId) return;
+
+    const backupFolder = await findFolderByName(otherBookmarksId, BACKUP_FOLDER_NAME);
     if (!backupFolder) return;
 
     const targetFolderName = activeFolder === 'private' ? PRIVATE_FOLDER_NAME : WORK_FOLDER_NAME;
@@ -149,7 +198,13 @@ async function toggleBookmarks() {
     const {activeFolder} = await chrome.storage.local.get('activeFolder');
     const nextFolder = activeFolder === 'private' ? 'work' : 'private';
 
-    const backupFolder = await findFolderByName(OTHER_BOOKMARKS_ID, BACKUP_FOLDER_NAME);
+    const otherBookmarksId = await findOtherBookmarksFolder();
+    if (!otherBookmarksId) {
+      console.error('Other Bookmarks folder not found');
+      return;
+    }
+
+    const backupFolder = await findFolderByName(otherBookmarksId, BACKUP_FOLDER_NAME);
     if (!backupFolder) {
       console.error('Backup folder not found');
       return;
